@@ -35,11 +35,12 @@ def duckduckgo_search(query: str) -> str:
 # ---------- 2. LLM (Groq via OpenAI-compatible API) ----------
 def get_llm(api_key: str) -> LLM:
     return LLM(
-        model="openai/gpt-oss-120b",
+        model="openai/openai/gpt-oss-120b",
         custom_openai=True,
         base_url="https://api.groq.com/openai/v1",
         api_key=api_key,
         temperature=0.3,
+    )
     )
 
 
