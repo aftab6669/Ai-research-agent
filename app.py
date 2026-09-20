@@ -1,5 +1,7 @@
 import os
+import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 
 # Turn off CrewAI telemetry (optional, keeps things quiet)
 os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
@@ -14,7 +16,7 @@ st.title("🔎 AI Research Agent")
 st.write("Enter a topic and the agent will search the web and write a report.")
 
 
-# ---------- 1. Search tool (DuckDuckGo, free) ----------
+# ---------- 1. Tools ----------
 @tool("DuckDuckGo Search")
 def duckduckgo_search(query: str) -> str:
     """Search the web with DuckDuckGo. Input is a search query string.
@@ -32,6 +34,26 @@ def duckduckgo_search(query: str) -> str:
     return "\n".join(lines)
 
 
+@tool("Read Webpage")
+def read_webpage(url: str) -> str:
+    """Open a web page URL and return its main text (shortened).
+    Input is a full URL starting with http:// or https://."""
+    try:
+        resp = requests.get(
+            url.strip().strip("[]\"'"),
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (research-agent)"},
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        text = " ".join(soup.get_text(separator=" ").split())
+        return text[:3000] if text else "The page had no readable text."
+    except Exception as e:
+        return f"Could not read the page: {e}"
+
+
 # ---------- 2. LLM (Groq via OpenAI-compatible API) ----------
 def get_llm(api_key: str) -> LLM:
     return LLM(
@@ -39,7 +61,7 @@ def get_llm(api_key: str) -> LLM:
         custom_openai=True,
         base_url="https://api.groq.com/openai/v1",
         api_key=api_key,
-        temperature=0.3,
+        temperature=0.2,
     )
 
 
@@ -50,20 +72,23 @@ def run_research(topic: str, api_key: str) -> str:
         goal=f"Research '{topic}' thoroughly and write a clear, accurate report.",
         backstory=(
             "You are an experienced analyst who searches the web, checks "
-            "multiple sources, and writes well-structured reports."
+            "multiple sources, and writes well-structured reports. "
+            "You have ONLY two tools: 'DuckDuckGo Search' and 'Read Webpage'. "
+            "Never call any other tool such as open_file, browser or python."
         ),
-        tools=[duckduckgo_search],
+        tools=[duckduckgo_search, read_webpage],
         llm=get_llm(api_key),
         verbose=False,
         allow_delegation=False,
-        max_iter=6,  # limits how many search/think loops it can do
+        max_iter=8,  # limits how many search/think loops it can do
     )
 
     task = Task(
         description=(
             "Research the topic: {topic}\n"
-            "Use the search tool 2-4 times with different queries. "
-            "Then write a report in Markdown."
+            "Use 'DuckDuckGo Search' 2-4 times with different queries. "
+            "You may use 'Read Webpage' on at most 2 URLs from the results. "
+            "Do not use any other tools. Then write a report in Markdown."
         ),
         expected_output=(
             "A Markdown report with: a title, an introduction, 3-5 key "
@@ -81,6 +106,19 @@ def run_research(topic: str, api_key: str) -> str:
     )
     result = crew.kickoff(inputs={"topic": topic})
     return result.raw
+
+
+def run_with_retry(topic: str, api_key: str, attempts: int = 2) -> str:
+    """Try again if the model calls a tool that doesn't exist."""
+    last_error = None
+    for _ in range(attempts):
+        try:
+            return run_research(topic, api_key)
+        except Exception as e:
+            last_error = e
+            if "tool_use_failed" not in str(e) and "not in request.tools" not in str(e):
+                raise
+    raise last_error
 
 
 # ---------- 4. Streamlit UI ----------
@@ -108,7 +146,7 @@ if st.button("Generate report", type="primary"):
     else:
         with st.spinner("Researching and writing... this can take 1-2 minutes."):
             try:
-                report = run_research(topic.strip(), api_key)
+                report = run_with_retry(topic.strip(), api_key)
                 st.markdown(report)
                 st.download_button(
                     "Download report (.md)", report, file_name="report.md"
