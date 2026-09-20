@@ -41,7 +41,6 @@ def get_llm(api_key: str) -> LLM:
         api_key=api_key,
         temperature=0.3,
     )
-    )
 
 
 # ---------- 3. Build the crew (one agent, one task) ----------
